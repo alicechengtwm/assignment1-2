@@ -1,0 +1,47 @@
+## 4. Fit and over-fitting diagnostics
+
+### 4a. Optimal hyperparameters for all candidate models
+Each candidate model is refit on the full training data ($n = 316$) using a repeated 5-fold cross-validation (3 repeats, 15 folds) to stably select the best hyperparameters across the defined search grids. The table below summarizes the chosen configuration for every model.
+
+
+def format_param(v):
+    try:
+        return round(float(v), 4)
+    except (ValueError, TypeError):
+        return v
+
+final_cv = RepeatedKFold(n_splits=5, n_repeats=3, random_state=SEED)   # more stable tuning for the final fits
+fitted = {name: tuned(name, cv=final_cv).fit(X_raw, y) for name in MODELS}
+
+rows = []
+for name in ["OLS", "Ridge", "Lasso", "Elastic Net", "KNN", "Tree", "Random Forest", "Gradient Boosting"]:
+    rows.append(dict(
+        model=name,
+        best_params={k.replace("m__", ""): format_param(v) for k, v in fitted[name].best_params_.items()}
+    ))
+pd.DataFrame(rows).set_index("model").round(4)
+
+
+  ## 5. Final model and predictions for `test.rds`
+
+### The model with the lowest nested-CV MSE is refit on **all** 316 training rows (with its hyper-parameters re-tuned by repeated CV) and used to predict the 79 test students.
+
+  best_name="Random Forest"
+final = fitted[best_name]
+print("Selected model:", best_name)
+print("Hyper-parameters:", final.best_params_)
+print(f"Expected test MSE (nested CV): {res.loc[best_name, 'CV_MSE']:.4f},  "
+      f"mean-baseline MSE {res.loc[BASE, 'CV_MSE']:.4f}")
+
+pred = final.predict(test)
+assert pred.shape == (79,) and np.isfinite(pred).all()
+print("\nPredictions:\n", pred)
+print("\nPrediction summary:", pd.Series(pred).describe().round(3).to_dict())
+
+fig, ax = plt.subplots(figsize=(7, 4))
+sns.kdeplot(y, ax=ax, label="observed train score", fill=True, alpha=.3)
+sns.kdeplot(pred, ax=ax, label="predicted test score", fill=True, alpha=.3)
+ax.set_title("Predictions are shrunk towards the mean (expected for a weak-signal problem)"); ax.legend()
+plt.tight_layout(); plt.show()
+
+ ## Based on the honest out-of-sample evaluation using nested cross-validation (5-fold with 3 repeats), Random Forest proved to be the best-performing model, achieving the lowest test error with an expected MSE of 0.7489 (compared to the "predict-the-mean" baseline MSE of 0.9746 and OLS MSE of 0.8529). Random Forest excelled primarily because its bagging ensemble architecture and random feature subsampling (max_features=0.4, min_samples_leaf=3) naturally dampen individual tree variance and effectively capture non-linear relationships without memorizing the noise inherent in our small training sample (n = 316). In contrast, unpenalized OLS severely overfit the 46 post-encoding features, while standalone trees and regularized linear models (Ridge/Lasso at MSE ≈ 0.785 - 0.787) lacked either stability or the ability to exploit non-linear feature interactions. Consequently, the tuned Random Forest model was refit on the full training dataset to generate the final 79 predictions for test.rds.
